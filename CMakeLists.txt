@@ -38,13 +38,17 @@ if ("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_C_COMPILER_ID}" STREQUAL
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--as-needed,-rpath-link=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 endif()
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include
-                    ${CMAKE_CURRENT_SOURCE_DIR}/glfw/src/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/sample_helper_includes
+                    ${CMAKE_CURRENT_SOURCE_DIR}/glfw/src/include
+                    ${CMAKE_CURRENT_SOURCE_DIR}/floor_detector)
 add_subdirectory(glfw)
 add_subdirectory(window_controller_3d)
 
 
-add_executable(kinect_mocap_studio src/kinect_mocap_studio.cc)
+add_executable(kinect_mocap_studio 
+		src/kinect_mocap_studio.cc
+		floor_detector/FloorDetector.cpp
+		floor_detector/PointCloudGenerator.cpp)
 
 
 # Dependencies of this library

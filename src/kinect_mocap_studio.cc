@@ -5,12 +5,13 @@
 #include <iostream>
 #include <string>
 #include <iomanip>
-
+#include <ctime>
 
 #include <k4a/k4a.h>
 #include <k4abt.h>
 
-
+#include "FloorDetector.h"
+#include "PointCloudGenerator.h"
 #include "BodyTrackingHelpers.h"
 #include "Utilities.h"
 #include <Window3dWrapper.h>
@@ -320,6 +321,7 @@ int main(int argc, char**argv)
     exit(1);
   }
 
+  PrintAppUsage();
 
   int frame_count       = 0;
   //int frame_count_max   = 100;
@@ -371,6 +373,10 @@ int main(int argc, char**argv)
   nlohmann::json json_output;
   nlohmann::json frames_json = nlohmann::json::array();
 
+  time_t now = time(0);
+  char* dt = ctime(&now);
+  json_output["start_time"] = dt;
+
   json_output["k4abt_sdk_version"] = K4ABT_VERSION_STR;
 
   // Store all joint names to the json
@@ -399,8 +405,11 @@ int main(int argc, char**argv)
   window3d.SetCloseCallback(CloseCallback);
   window3d.SetKeyCallback(ProcessKey);
 
-
-
+  //
+  // PointCloudGenerator for floor estimation.
+  //
+  Samples::PointCloudGenerator pointCloudGenerator{ sensor_calibration };
+  Samples::FloorDetector floorDetector;
 
   //
   // Process each frame
@@ -420,7 +429,7 @@ int main(int argc, char**argv)
       k4a_wait_result_t queue_capture_result =
           k4abt_tracker_enqueue_capture(tracker, sensor_capture,
                                         K4A_WAIT_INFINITE);
-
+      k4a_image_t depth_image = k4a_capture_get_depth_image(sensor_capture);
       // Remember to release the sensor capture once you finish using it
       k4a_capture_release(sensor_capture);
 
@@ -456,6 +465,7 @@ int main(int argc, char**argv)
         frame_result_json["num_bodies"]     = num_bodies;
         frame_result_json["imu"]            = nlohmann::json::array();
         frame_result_json["bodies"]         = nlohmann::json::array();
+        frame_result_json["floor"]         = nlohmann::json::array();
 
 
         //Question:
@@ -476,6 +486,56 @@ int main(int argc, char**argv)
         push_imu_data_to_json(imu_result_json, imu_sample);
         frame_result_json["imu"].push_back(imu_result_json);
 
+        //Fit a plane to the depth points that are furthest away from
+        //the camera in the direction of gravity (this will fail when the
+        //camera accelerates by 0.2 m/s2 in any direction)
+        //This uses code from teh floor_detector example code
+        
+
+
+        // Update point cloud.
+        pointCloudGenerator.Update(depth_image);
+
+        // Get down-sampled cloud points.
+        const int downsampleStep = 2;
+        const auto& cloudPoints = pointCloudGenerator.GetCloudPoints(downsampleStep);
+
+        // Detect floor plane based on latest visual and inertial observations.
+        const size_t minimumFloorPointCount = 1024 / (downsampleStep * downsampleStep);
+        const auto& maybeFloorPlane = 
+                floorDetector.TryDetectFloorPlane(cloudPoints, imu_sample, 
+                              sensor_calibration, minimumFloorPointCount);
+
+        // Visualize point cloud.
+        window3d.UpdatePointClouds(depth_image);
+
+        // Visualize the floor plane.
+        nlohmann::json floor_result_json;
+        if (maybeFloorPlane.has_value())
+        {
+            // For visualization purposes, make floor origin the projection of a point 1.5m in front of the camera.
+            Samples::Vector cameraOrigin = { 0, 0, 0 };
+            Samples::Vector cameraForward = { 0, 0, 1 };
+
+            auto p = maybeFloorPlane->ProjectPoint(cameraOrigin) 
+                   + maybeFloorPlane->ProjectVector(cameraForward) * 1.5f;
+
+            auto n = maybeFloorPlane->Normal;
+
+            window3d.SetFloorRendering(true, p.X, p.Y, p.Z, n.X, n.Y, n.Z);
+            floor_result_json["point"].push_back({p.X, p.Y, p.Z});
+            floor_result_json["normal"].push_back({n.X, n.Y, n.Z});
+            floor_result_json["valid"]=true;
+        }
+        else
+        {
+            window3d.SetFloorRendering(false, 0, 0, 0);
+            floor_result_json["point"].push_back({0.,0.,0.});
+            floor_result_json["normal"].push_back({0.,0.,0.});
+            floor_result_json["valid"]=false;
+        }
+        frame_result_json["floor"].push_back(floor_result_json);
+
         //Vizualize the tracked result
         VisualizeResult(body_frame, window3d, depthWidth, depthHeight);
         window3d.SetLayout3d(s_layoutMode);
@@ -484,6 +544,7 @@ int main(int argc, char**argv)
 
 
         k4abt_frame_release(body_frame);
+        k4a_image_release(depth_image);
 
         // Remember to release the body frame once you finish using it
         frames_json.push_back(frame_result_json);
