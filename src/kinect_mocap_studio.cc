@@ -9,6 +9,7 @@
 
 #include <k4a/k4a.h>
 #include <k4abt.h>
+#include <k4arecord/record.h>
 
 #include "FloorDetector.h"
 #include "PointCloudGenerator.h"
@@ -296,13 +297,21 @@ int main(int argc, char**argv)
   std::string k4a_depth_mode_str;
   int k4a_camera_resolution_mode = 0;
   int k4a_frames_per_second      = 0;
+  bool record_sensor_data = false;
   try{
 
     TCLAP::CmdLine cmd( "kinect_mocap_studio is a command-line tool to record"
                         "video and skeletal data from the Azure-Kinect",
                         ' ', "0.0");
 
-    TCLAP::ValueArg<std::string> output_name_arg("o","oname",
+
+    TCLAP::ValueArg<bool> record_sensor_data_arg("w","write",
+        "Write sensor data to *.mkv file",false,false,
+        "bool");
+
+    cmd.add( record_sensor_data_arg );
+
+    TCLAP::ValueArg<std::string> output_name_arg("o","name",
         "Name of output file excluding the file extension",false,"output",
         "string");
 
@@ -359,7 +368,7 @@ int main(int argc, char**argv)
       exit(1);
     }
 
-
+    record_sensor_data = record_sensor_data_arg.isSet();
 
 
     k4a_frames_per_second = k4a_frames_per_second_arg.getValue();
@@ -392,8 +401,12 @@ int main(int argc, char**argv)
   std::cout << "depth_mode         :" << k4a_depth_mode_str << std::endl;
   std::cout << "frames_per_second  :" << k4a_frames_per_second << std::endl;
   std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
-  std::cout << "output file name   :" << output_file_name   << std::endl;
-
+  std::cout << "output file name   :" << output_file_name << ".json"
+                                      << std::endl;
+  if(record_sensor_data){
+    std::cout << "video file name    :"  << output_file_name << ".mkv"
+                                        << std::endl;
+  }
 
 
 
@@ -403,12 +416,16 @@ int main(int argc, char**argv)
   //int frame_count_max   = 100;
 
   std::string output_json_file = output_file_name+".json";
+  std::string output_sensor_file = output_file_name+".mkv";
 
+  //int32_t short_timeout_in_ms
+  //    = int32_t(1000. / (3.*double(k4a_frames_per_second)) );
 
-  int32_t timeout_in_ms = 0;
+  //int32_t long_timeout_in_ms
+  //    = int32_t(1000./ double(k4a_frames_per_second) );
 
   //
-  // Configure and starte the device
+  // Configure and start the device
   //
   k4a_device_t device = NULL;
   VERIFY(k4a_device_open(0, &device), "Open K4A Device failed!");
@@ -459,7 +476,6 @@ int main(int argc, char**argv)
   //Start the IMU
   VERIFY(k4a_device_start_imu(device),"Start K4A imu failed!");
 
-
   //
   // JSON pre-amble
   //
@@ -496,6 +512,12 @@ int main(int argc, char**argv)
   }
 
   //
+  // PointCloudGenerator for floor estimation.
+  //
+  Samples::PointCloudGenerator pointCloudGenerator{ sensor_calibration };
+  Samples::FloorDetector floorDetector;
+
+  //
   // Visualization Window
   //
 
@@ -504,11 +526,28 @@ int main(int argc, char**argv)
   window3d.SetCloseCallback(CloseCallback);
   window3d.SetKeyCallback(ProcessKey);
 
-  //
-  // PointCloudGenerator for floor estimation.
-  //
-  Samples::PointCloudGenerator pointCloudGenerator{ sensor_calibration };
-  Samples::FloorDetector floorDetector;
+  k4a_record_t recording;
+
+  if(record_sensor_data){
+    if (K4A_FAILED(k4a_record_create(output_sensor_file.c_str(), device,
+                                    deviceConfig, &recording)))
+    {
+      std::cerr << "error: k4a_record_create() failed, unable to create "
+                << output_sensor_file << std::endl;
+      exit(1);
+    }
+    if( K4A_FAILED(k4a_record_add_imu_track(recording)) )
+    {
+      std::cerr << "Error: k4a_record_add_imu_track() failed" << std::endl;
+      exit(1);
+    }
+    if( K4A_FAILED(k4a_record_write_header(recording)) )
+    {
+      std::cerr << "Error: k4a_record_write_header() failed" << std::endl;
+      exit(1);
+    }
+
+  }
 
   //
   // Process each frame
@@ -529,6 +568,20 @@ int main(int argc, char**argv)
           k4abt_tracker_enqueue_capture(tracker, sensor_capture,
                                         K4A_WAIT_INFINITE);
       k4a_image_t depth_image = k4a_capture_get_depth_image(sensor_capture);
+
+      if(record_sensor_data)
+      {
+        k4a_result_t write_sensor_capture
+            = k4a_record_write_capture(recording, sensor_capture);
+
+        if (K4A_FAILED(write_sensor_capture))
+        {
+          std::cerr << "error: k4a_record_write_capture() returned "
+                    << write_sensor_capture << std::endl;
+          break;
+        }
+      }
+
       // Remember to release the sensor capture once you finish using it
       k4a_capture_release(sensor_capture);
 
@@ -580,8 +633,20 @@ int main(int argc, char**argv)
         nlohmann::json imu_result_json;
         k4a_imu_sample_t imu_sample;
         VERIFY_WAIT( k4a_device_get_imu_sample(device,&imu_sample,
-                                               timeout_in_ms),
+                                               K4A_WAIT_INFINITE),
                        "Timed out waiting for IMU data");
+        if(record_sensor_data)
+        {
+          k4a_result_t write_imu_sample
+            = k4a_record_write_imu_sample(recording, imu_sample);
+          if (K4A_FAILED(write_imu_sample))
+          {
+              std::cerr << "error: k4a_record_write_imu_sample() returned "
+                        << write_imu_sample << std::endl;
+              //break;
+          }
+        }
+
         push_imu_data_to_json(imu_result_json, imu_sample);
         frame_result_json["imu"].push_back(imu_result_json);
 
@@ -653,33 +718,40 @@ int main(int argc, char**argv)
       else if (pop_frame_result == K4A_WAIT_RESULT_TIMEOUT)
       {
         //  It should never hit timeout when K4A_WAIT_INFINITE is set.
-        printf("Error! Pop body frame result timeout!\n");
-        break;
+        printf("error: timeout k4abt_tracker_pop_result()\n");
+        //break;
       }
       else
       {
         printf("Pop body frame result failed!\n");
-        break;
+        //break;
       }
     }
     else if (get_capture_result == K4A_WAIT_RESULT_TIMEOUT)
     {
       // It should never hit time out when K4A_WAIT_INFINITE is set.
       printf("Error! Get depth frame time out!\n");
-      break;
+      //break;
     }
     else
     {
       printf("Get depth capture returned error: %d\n", get_capture_result);
-      break;
+      //break;
     }
 
   } while (s_isRunning);
 
   printf("Finished body tracking processing!\n");
 
-  //Write the frame_data_time_series to file
+  //Write sensor data to file
+  if(record_sensor_data)
+  {
+    k4a_record_flush(recording);
+    k4a_record_close(recording);
+    std::cout << "Sensor data written to " << output_sensor_file << std::endl;
+  }
 
+  //Write the frame_data_time_series to file
   json_output["frames"] = frames_json;
   std::ofstream output_file(output_json_file.c_str());
   output_file << std::setw(4) << json_output << std::endl;
