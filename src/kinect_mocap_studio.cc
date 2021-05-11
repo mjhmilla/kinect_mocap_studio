@@ -553,8 +553,6 @@ int main(int argc, char**argv)
     VERIFY(k4a_playback_get_record_configuration(playback_handle,&record_config),
            "error: k4a_playback_get_record_configuration() failed");
 
-    k4a_frames_per_second = record_config.camera_fps;
-
     switch(record_config.depth_mode){
       case K4A_DEPTH_MODE_OFF:
         {
@@ -993,7 +991,8 @@ int main(int argc, char**argv)
               auto n = maybeFloorPlane->Normal;
 
               window3d.SetFloorRendering(true, p.X, p.Y, p.Z, n.X, n.Y, n.Z);
-              floor_result_json["point"].push_back({p.X, p.Y, p.Z});
+              floor_result_json["point"].push_back(
+                    {p.X*1000.f, p.Y*1000.f, p.Z*1000.f});
               floor_result_json["normal"].push_back({n.X, n.Y, n.Z});
               floor_result_json["valid"]=true;
           }
