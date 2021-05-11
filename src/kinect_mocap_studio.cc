@@ -290,8 +290,12 @@ int main(int argc, char**argv)
   //    - [optional] name of the mkv file to write
 
   std::string output_file_name;
+  double temporal_smoothing=0.;
   //bool save_camera_data = false;
-
+  int k4a_depth_mode     = 0;
+  std::string k4a_depth_mode_str;
+  int k4a_camera_resolution_mode = 0;
+  int k4a_frames_per_second      = 0;
   try{
 
     TCLAP::CmdLine cmd( "kinect_mocap_studio is a command-line tool to record"
@@ -299,9 +303,32 @@ int main(int argc, char**argv)
                         ' ', "0.0");
 
     TCLAP::ValueArg<std::string> output_name_arg("o","oname",
-        "Name of output file",false,"output","string");
+        "Name of output file excluding the file extension",false,"output",
+        "string");
 
     cmd.add( output_name_arg );
+
+    TCLAP::ValueArg<std::string> depth_mode_arg("d","depth_mode",
+      "Depth mode: OFF, NFOV_2X2BINNED, NFOV_UNBINNED, "
+      "WFOV_2X2BINNED, WFOV_UNBINNED, PASSIVE_IR",false,
+       "NFOV_UNBINNED","string");
+
+
+    cmd.add( depth_mode_arg );
+
+    TCLAP::ValueArg<int> k4a_frames_per_second_arg("f","fps",
+      "Frames per second: 5, 15, 30",false,
+      30,"int");
+
+    cmd.add( k4a_frames_per_second_arg );
+
+    TCLAP::ValueArg<double> temporal_smoothing_arg("s","smoothing",
+      "Amount of temporal smoothing in the skeleton tracker (0-1)",false,
+      K4ABT_DEFAULT_TRACKER_SMOOTHING_FACTOR,"double");
+
+    cmd.add( temporal_smoothing_arg );
+
+
 
     //TCLAP::SwitchArg mkv_switch("m","mkv","Record rgb and depth camera data"
     //                              " to an *.mkv file", cmd, false);
@@ -310,7 +337,47 @@ int main(int argc, char**argv)
     cmd.parse( argc, argv );
 
     // Get the value parsed by each arg.
-    output_file_name = output_name_arg.getValue();
+    output_file_name      = output_name_arg.getValue();
+
+    k4a_depth_mode_str        = depth_mode_arg.getValue();
+    if( std::strcmp(k4a_depth_mode_str.c_str(),"OFF")==0){
+        k4a_depth_mode=0;
+    }else if(std::strcmp(k4a_depth_mode_str.c_str(),"NFOV_2X2BINNED")==0){
+        k4a_depth_mode=1;
+    }else if(std::strcmp(k4a_depth_mode_str.c_str(),"NFOV_UNBINNED")==0){
+        k4a_depth_mode=2;
+    }else if(std::strcmp(k4a_depth_mode_str.c_str(),"WFOV_2X2BINNED")==0){
+        k4a_depth_mode=3;
+    }else if(std::strcmp(k4a_depth_mode_str.c_str(),"WFOV_UNBINNED")==0){
+        k4a_depth_mode=4;
+    }else if(std::strcmp(k4a_depth_mode_str.c_str(),"PASSIVE_IR")==0){
+        k4a_depth_mode=5;
+    }else{
+      std::cerr << "error: depth_mode must be: OFF, NFOV_2X2BINNED, "
+                << "NFOV_UNBINNED, WFOV_2X2BINNED, WFOV_UNBINNED, PASSIVE_IR."
+                << std::endl;
+      exit(1);
+    }
+
+
+
+
+    k4a_frames_per_second = k4a_frames_per_second_arg.getValue();
+    if( k4a_frames_per_second != 5
+        && k4a_frames_per_second != 15
+        && k4a_frames_per_second != 30){
+        std::cerr << "error: fps must be 5, 15, or 30"
+                  << std::endl;
+        exit(1);
+    }
+
+    temporal_smoothing    = temporal_smoothing_arg.getValue();
+    if(temporal_smoothing > 1.0 || temporal_smoothing < 0.0){
+        std::cerr << "error: temporal_smoothing must be between 0.0-1.0"
+                  << std::endl;
+        exit(1);
+    }
+
     //save_camera_data = mkvSwitch.getValue();
 
 
@@ -321,6 +388,15 @@ int main(int argc, char**argv)
     exit(1);
   }
 
+
+  std::cout << "depth_mode         :" << k4a_depth_mode_str << std::endl;
+  std::cout << "frames_per_second  :" << k4a_frames_per_second << std::endl;
+  std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
+  std::cout << "output file name   :" << output_file_name   << std::endl;
+
+
+
+
   PrintAppUsage();
 
   int frame_count       = 0;
@@ -329,7 +405,7 @@ int main(int argc, char**argv)
   std::string output_json_file = output_file_name+".json";
 
 
-  int32_t timeout_in_ms = 1;
+  int32_t timeout_in_ms = 0;
 
   //
   // Configure and starte the device
@@ -339,8 +415,26 @@ int main(int argc, char**argv)
 
   // Start camera. Make sure depth camera is enabled.
   k4a_device_configuration_t deviceConfig = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-  deviceConfig.depth_mode       = K4A_DEPTH_MODE_NFOV_UNBINNED;
-  deviceConfig.color_resolution = K4A_COLOR_RESOLUTION_OFF;
+  deviceConfig.depth_mode       = k4a_depth_mode_t(k4a_depth_mode);
+
+  switch (k4a_frames_per_second){
+    case 5:{
+      deviceConfig.camera_fps   = K4A_FRAMES_PER_SECOND_5;
+    } break;
+    case 15:{
+      deviceConfig.camera_fps   = K4A_FRAMES_PER_SECOND_15;
+    } break;
+    case 30:{
+      deviceConfig.camera_fps   = K4A_FRAMES_PER_SECOND_30;
+    } break;
+    default:{
+      std::cerr << "error: fps must be 5, 15, or 30"
+                << std::endl;
+      exit(1);
+    }
+  };
+
+  deviceConfig.color_resolution = K4A_COLOR_RESOLUTION_OFF;  
   VERIFY(k4a_device_start_cameras(device, &deviceConfig),
        "Start K4A cameras failed!");
 
@@ -360,6 +454,7 @@ int main(int argc, char**argv)
   k4abt_tracker_configuration_t tracker_config = K4ABT_TRACKER_CONFIG_DEFAULT;
   VERIFY(k4abt_tracker_create(&sensor_calibration, tracker_config, &tracker),
         "Body tracker initialization failed!");
+  k4abt_tracker_set_temporal_smoothing(tracker,temporal_smoothing);
 
   //Start the IMU
   VERIFY(k4a_device_start_imu(device),"Start K4A imu failed!");
@@ -378,6 +473,10 @@ int main(int argc, char**argv)
   json_output["start_time"] = dt;
 
   json_output["k4abt_sdk_version"] = K4ABT_VERSION_STR;
+
+  json_output["depth_mode"]         = k4a_depth_mode_str;
+  json_output["frames_per_second"]  = k4a_frames_per_second;
+  json_output["temporal_smoothing"] = temporal_smoothing;
 
   // Store all joint names to the json
   json_output["joint_names"] = nlohmann::json::array();
