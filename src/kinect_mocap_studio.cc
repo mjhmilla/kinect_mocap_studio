@@ -73,10 +73,14 @@ void PrintAppUsage()
 {
     printf("\n");
     printf(" Basic Navigation:\n\n");
-    printf(" Rotate: Rotate the camera by moving the mouse while holding mouse left button\n");
-    printf(" Pan: Translate the scene by holding Ctrl key and drag the scene with mouse left button\n");
-    printf(" Zoom in/out: Move closer/farther away from the scene center by scrolling the mouse scroll wheel\n");
-    printf(" Select Center: Center the scene based on a detected joint by right clicking the joint with mouse\n");
+    printf(" Rotate: Rotate the camera by moving the mouse while holding mouse"
+                " left button\n");
+    printf(" Pan: Translate the scene by holding Ctrl key and drag the scene "
+                "with mouse left button\n");
+    printf(" Zoom in/out: Move closer/farther away from the scene center by "
+                "scrolling the mouse scroll wheel\n");
+    printf(" Select Center: Center the scene based on a detected joint by "
+                "right clicking the joint with mouse\n");
     printf("\n");
     printf(" Key Shortcuts\n\n");
     printf(" ESC: quit\n");
@@ -306,15 +310,16 @@ int main(int argc, char**argv)
   //    - [optional] name of the mkv file to write
 
   std::string output_file_name;
-  double temporal_smoothing=0.;
+  double temporal_smoothing       = 0.;
   //bool save_camera_data = false;
-  int k4a_depth_mode     = 0;
+  int k4a_depth_mode              = 0;
   std::string k4a_depth_mode_str;
   std::string input_sensor_file_str;
-  bool process_sensor_file = false;
-  int k4a_camera_resolution_mode = 0;
-  int k4a_frames_per_second      = 0;
-  bool record_sensor_data = false;
+  bool process_sensor_file        = false;
+  int k4a_frames_per_second       = 0;
+  std::string k4a_color_resolution_str;
+  int k4a_color_resolution        = 0;
+  bool record_sensor_data         = false;
   try{
 
     TCLAP::CmdLine cmd( "kinect_mocap_studio is a command-line tool to record"
@@ -347,6 +352,13 @@ int main(int argc, char**argv)
 
 
     cmd.add( depth_mode_arg );
+
+    TCLAP::ValueArg<std::string> k4a_color_resolution_arg("c","color_mode",
+      "Color resolution: OFF, 720P, 1080P, "
+      "1440P, 1536P, 2160P, 3072P",false,
+       "OFF","string");
+
+    cmd.add( k4a_color_resolution_arg );
 
     TCLAP::ValueArg<int> k4a_frames_per_second_arg("f","fps",
       "Frames per second: 5, 15, 30",false,
@@ -391,8 +403,28 @@ int main(int argc, char**argv)
       exit(1);
     }
 
-    record_sensor_data = record_sensor_data_arg.isSet();
+    k4a_color_resolution_str        = k4a_color_resolution_arg.getValue();
+    if( std::strcmp(k4a_color_resolution_str.c_str(),"OFF")==0){
+        k4a_color_resolution=0;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"720P")==0){
+        k4a_color_resolution=1;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"1080P")==0){
+        k4a_color_resolution=2;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"1440P")==0){
+        k4a_color_resolution=3;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"1536P")==0){
+        k4a_color_resolution=4;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"2160P")==0){
+        k4a_color_resolution=5;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"3072P")==0){
+        k4a_color_resolution=6;
+    }else{
+      std::cerr << "error: color resolution must be: OFF, 720P, 1080P, "
+                   "1440P, 1536P, 2160P, 3072P" << std::endl;
+      exit(1);
+    }
 
+    record_sensor_data = record_sensor_data_arg.getValue();
 
     k4a_frames_per_second = k4a_frames_per_second_arg.getValue();
     if( k4a_frames_per_second != 5
@@ -451,8 +483,48 @@ int main(int argc, char**argv)
   int frame_count       = 0;
   //int frame_count_max   = 100;
 
+  //It appears as though some of the configuration information is
+  //not written to the mkv files and so can become lost. Here I'm
+  //using an ugly but practical solution of embedding this meta data in
+  //the file name.
+  if(!process_sensor_file){
+    std::stringstream output_file_name_ss;
+    output_file_name_ss << output_file_name;
+    output_file_name_ss << "_" << k4a_depth_mode_str
+                        << "_" << k4a_color_resolution_str
+                        << "_" << k4a_frames_per_second << "fps";
+    output_file_name = output_file_name_ss.str();
+  }
+
+
   std::string output_json_file = output_file_name+".json";
   std::string output_sensor_file = output_file_name+".mkv";
+
+  //Check to make sure the file name is unique
+  int counter = 0;
+  bool name_collision=false;
+  do{
+    std::ifstream jsonFile(output_json_file.c_str());
+    std::ifstream sensorFile(output_sensor_file.c_str());
+    name_collision=false;
+
+    if(jsonFile.good()){
+        name_collision=true;
+        jsonFile.close();
+    }
+    if(sensorFile.good()){
+        name_collision=true;
+        sensorFile.close();
+    }
+    if(name_collision){
+        std::stringstream ss;
+        ss << output_file_name << "_" << counter;
+        output_json_file   = ss.str()+".json";
+        output_sensor_file = ss.str()+".mkv";
+        counter++;
+    }
+
+  }while(name_collision);
 
   //int32_t short_timeout_in_ms
   //    = int32_t(1000. / (3.*double(k4a_frames_per_second)) );
@@ -482,6 +554,7 @@ int main(int argc, char**argv)
            "error: k4a_playback_get_record_configuration() failed");
 
     k4a_frames_per_second = record_config.camera_fps;
+
     switch(record_config.depth_mode){
       case K4A_DEPTH_MODE_OFF:
         {
@@ -513,8 +586,42 @@ int main(int argc, char**argv)
       }
     };
 
+    switch(record_config.color_resolution){
+      case K4A_COLOR_RESOLUTION_OFF:
+        {
+          k4a_color_resolution_str = "OFF";
+        } break;
+      case K4A_COLOR_RESOLUTION_720P:
+        {
+          k4a_color_resolution_str = "720P";
+        } break;
+      case K4A_COLOR_RESOLUTION_1080P:
+        {
+          k4a_color_resolution_str = "1080P";
+        } break;
+      case K4A_COLOR_RESOLUTION_1440P:
+        {
+          k4a_color_resolution_str = "1440P";
+        } break;
+      case K4A_COLOR_RESOLUTION_1536P:
+        {
+          k4a_color_resolution_str = "1536P";
+        } break;
+      case K4A_COLOR_RESOLUTION_2160P:
+        {
+          k4a_color_resolution_str = "2160P";
+        } break;
+      case K4A_COLOR_RESOLUTION_3072P:
+        {
+          k4a_color_resolution_str = "3072P";
+        } break;
+      default:
+      {
+        std::cerr << "error: unrecognized color resolution in recording" << std::endl;
+      }
+    };
+
     k4a_frames_per_second = record_config.camera_fps;
-    std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
 
     //device_config.camera_fps = record_config.camera_fps;
     //device_config.color_format = record_config.color_format;
@@ -547,7 +654,27 @@ int main(int argc, char**argv)
       }
     };
 
-    device_config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
+    if( std::strcmp(k4a_color_resolution_str.c_str(),"OFF")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"720P")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_720P;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"1080P")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_1080P;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"1440P")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_1440P;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"1536P")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_1536P;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"2160P")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_2160P;
+    }else if(std::strcmp(k4a_color_resolution_str.c_str(),"3072P")==0){
+        device_config.color_resolution = K4A_COLOR_RESOLUTION_3072P;
+    }else{
+      std::cerr << "error: color resolution must be: OFF, 720P, 1080P, "
+                   "1440P, 1536P, 2160P, 3072P" << std::endl;
+      exit(1);
+    }
+
+
     VERIFY(k4a_device_start_cameras(device, &device_config),
          "Start K4A cameras failed!");
 
@@ -566,14 +693,13 @@ int main(int argc, char**argv)
   //
   // Echo the configuration to the command terminal
   //
-  std::cout << "depth_mode         :" << k4a_depth_mode_str << std::endl;
-  std::cout << "frames_per_second  :" << k4a_frames_per_second << std::endl;
-  std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
-  std::cout << "output file name   :" << output_file_name << ".json"
-                                      << std::endl;
+  std::cout << "depth_mode         :" << k4a_depth_mode_str       << std::endl;
+  std::cout << "color_resolution   :" << k4a_color_resolution_str << std::endl;
+  std::cout << "frames_per_second  :" << k4a_frames_per_second    << std::endl;
+  std::cout << "temporal smoothing :" << temporal_smoothing       << std::endl;
+  std::cout << "output file name   :" << output_json_file         << std::endl;
   if(record_sensor_data){
-    std::cout << "video file name    :"  << output_file_name << ".mkv"
-                                        << std::endl;
+    std::cout << "video file name    :"  << output_sensor_file    << std::endl;
   }
 
   //
@@ -604,6 +730,7 @@ int main(int argc, char**argv)
   json_output["k4abt_sdk_version"] = K4ABT_VERSION_STR;
 
   json_output["depth_mode"]         = k4a_depth_mode_str;
+  json_output["color_resolution"]   = k4a_color_resolution_str;
   json_output["frames_per_second"]  = k4a_frames_per_second;
   json_output["temporal_smoothing"] = temporal_smoothing;
 
@@ -611,17 +738,17 @@ int main(int argc, char**argv)
   json_output["joint_names"] = nlohmann::json::array();
   for (int i = 0; i < (int)K4ABT_JOINT_COUNT; i++)
   {
-      json_output["joint_names"].push_back(
-                  g_jointNames.find((k4abt_joint_id_t)i)->second);
+    json_output["joint_names"].push_back(
+                g_jointNames.find((k4abt_joint_id_t)i)->second);
   }
 
   // Store all bone linkings to the json
   json_output["bone_list"] = nlohmann::json::array();
   for (int i = 0; i < (int)g_boneList.size(); i++)
   {
-      json_output["bone_list"].push_back(
-                  { g_jointNames.find(g_boneList[i].first)->second,
-                    g_jointNames.find(g_boneList[i].second)->second });
+    json_output["bone_list"].push_back(
+                { g_jointNames.find(g_boneList[i].first)->second,
+                  g_jointNames.find(g_boneList[i].second)->second });
   }
 
   //
@@ -659,7 +786,6 @@ int main(int argc, char**argv)
       std::cerr << "Error: k4a_record_write_header() failed" << std::endl;
       exit(1);
     }
-
   }
 
   //
@@ -676,7 +802,7 @@ int main(int argc, char**argv)
           k4a_playback_get_next_capture(playback_handle, &sensor_capture);
       if (stream_result == K4A_STREAM_RESULT_EOF)
       {
-          break;
+        break;
       }
       else if( stream_result == K4A_STREAM_RESULT_SUCCEEDED)
       {
@@ -922,6 +1048,10 @@ int main(int argc, char**argv)
   }
 
   //Write the frame_data_time_series to file
+  now = time(0);
+  dt = ctime(&now);
+  json_output["end_time"] = dt;
+
   json_output["frames"] = frames_json;
   std::ofstream output_file(output_json_file.c_str());
   output_file << std::setw(4) << json_output << std::endl;
