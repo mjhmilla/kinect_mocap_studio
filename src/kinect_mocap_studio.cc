@@ -10,6 +10,7 @@
 #include <k4a/k4a.h>
 #include <k4abt.h>
 #include <k4arecord/record.h>
+#include <k4arecord/playback.h>
 
 #include "FloorDetector.h"
 #include "PointCloudGenerator.h"
@@ -35,6 +36,20 @@
             error, __FILE__, __FUNCTION__, __LINE__);       \
     exit(1);                                                \
   }
+
+bool check_depth_image_exists(k4a_capture_t capture)
+{
+  k4a_image_t depth = k4a_capture_get_depth_image(capture);
+  if (depth != nullptr)
+  {
+      k4a_image_release(depth);
+      return true;
+  }
+  else
+  {
+      return false;
+  }
+}
 
 /*
 To do:
@@ -295,6 +310,8 @@ int main(int argc, char**argv)
   //bool save_camera_data = false;
   int k4a_depth_mode     = 0;
   std::string k4a_depth_mode_str;
+  std::string input_sensor_file_str;
+  bool process_sensor_file = false;
   int k4a_camera_resolution_mode = 0;
   int k4a_frames_per_second      = 0;
   bool record_sensor_data = false;
@@ -305,13 +322,19 @@ int main(int argc, char**argv)
                         ' ', "0.0");
 
 
+    TCLAP::ValueArg<std::string> input_sensor_file_arg("i","infile",
+        "Input sensor file of type *.mkv to process",false,"",
+        "string");
+
+    cmd.add( input_sensor_file_arg );
+
     TCLAP::ValueArg<bool> record_sensor_data_arg("w","write",
         "Write sensor data to *.mkv file",false,false,
         "bool");
 
     cmd.add( record_sensor_data_arg );
 
-    TCLAP::ValueArg<std::string> output_name_arg("o","name",
+    TCLAP::ValueArg<std::string> output_name_arg("o","outfile",
         "Name of output file excluding the file extension",false,"output",
         "string");
 
@@ -387,8 +410,29 @@ int main(int argc, char**argv)
         exit(1);
     }
 
-    //save_camera_data = mkvSwitch.getValue();
 
+    input_sensor_file_str = input_sensor_file_arg.getValue();
+    if(input_sensor_file_str.length() > 0)
+    {
+      std::string mkv_ext = ".mkv";
+      if(input_sensor_file_str.find(mkv_ext) !=
+         (input_sensor_file_str.length()-4))
+      {
+        std::cerr << "error: input sensor file must be of type *.mkv"
+                  << std::endl;
+        exit(1);
+      }
+      process_sensor_file = true;
+      output_file_name =
+          input_sensor_file_str.substr(0,input_sensor_file_str.length()-4);
+    }
+
+    if(process_sensor_file && record_sensor_data)
+    {
+        std::cerr << "error: cannot process an input file (-i) and write"
+                     "(-w) the sensor data at the same time" << std::endl;
+        exit(1);
+    }
 
   } catch (TCLAP::ArgException &e)  // catch exceptions
   {
@@ -398,15 +442,7 @@ int main(int argc, char**argv)
   }
 
 
-  std::cout << "depth_mode         :" << k4a_depth_mode_str << std::endl;
-  std::cout << "frames_per_second  :" << k4a_frames_per_second << std::endl;
-  std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
-  std::cout << "output file name   :" << output_file_name << ".json"
-                                      << std::endl;
-  if(record_sensor_data){
-    std::cout << "video file name    :"  << output_file_name << ".mkv"
-                                        << std::endl;
-  }
+
 
 
 
@@ -428,45 +464,121 @@ int main(int argc, char**argv)
   // Configure and start the device
   //
   k4a_device_t device = NULL;
-  VERIFY(k4a_device_open(0, &device), "Open K4A Device failed!");
+  k4a_playback_t playback_handle = NULL;
 
-  // Start camera. Make sure depth camera is enabled.
-  k4a_device_configuration_t deviceConfig = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-  deviceConfig.depth_mode       = k4a_depth_mode_t(k4a_depth_mode);
-
-  switch (k4a_frames_per_second){
-    case 5:{
-      deviceConfig.camera_fps   = K4A_FRAMES_PER_SECOND_5;
-    } break;
-    case 15:{
-      deviceConfig.camera_fps   = K4A_FRAMES_PER_SECOND_15;
-    } break;
-    case 30:{
-      deviceConfig.camera_fps   = K4A_FRAMES_PER_SECOND_30;
-    } break;
-    default:{
-      std::cerr << "error: fps must be 5, 15, or 30"
-                << std::endl;
-      exit(1);
-    }
-  };
-
-  deviceConfig.color_resolution = K4A_COLOR_RESOLUTION_OFF;  
-  VERIFY(k4a_device_start_cameras(device, &deviceConfig),
-       "Start K4A cameras failed!");
-
-  //Get the sensor calibration information
   k4a_calibration_t sensor_calibration;
-  VERIFY(k4a_device_get_calibration(device, deviceConfig.depth_mode,
-                    deviceConfig.color_resolution,
-                    &sensor_calibration),
-        "Get depth camera calibration failed!");
+  k4a_device_configuration_t device_config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
+
+
+  if(process_sensor_file)
+  {
+    VERIFY(k4a_playback_open(input_sensor_file_str.c_str(), &playback_handle),
+           "error: k4a_playback_open() failed");
+    VERIFY(k4a_playback_get_calibration(playback_handle, &sensor_calibration),
+           "error: k4a_playback_get_calibration() failed");
+
+    k4a_record_configuration_t record_config;
+    VERIFY(k4a_playback_get_record_configuration(playback_handle,&record_config),
+           "error: k4a_playback_get_record_configuration() failed");
+
+    k4a_frames_per_second = record_config.camera_fps;
+    switch(record_config.depth_mode){
+      case K4A_DEPTH_MODE_OFF:
+        {
+          k4a_depth_mode_str = "OFF";
+        } break;
+      case K4A_DEPTH_MODE_NFOV_2X2BINNED:
+        {
+          k4a_depth_mode_str = "NFOV_2X2BINNED";
+        } break;
+      case K4A_DEPTH_MODE_NFOV_UNBINNED:
+        {
+          k4a_depth_mode_str = "NFOV_UNBINNED";
+        } break;
+      case K4A_DEPTH_MODE_WFOV_2X2BINNED:
+        {
+          k4a_depth_mode_str = "WFOV_2X2BINNED";
+        } break;
+      case K4A_DEPTH_MODE_WFOV_UNBINNED:
+        {
+          k4a_depth_mode_str = "WFOV_UNBINNED";
+        } break;
+      case K4A_DEPTH_MODE_PASSIVE_IR:
+        {
+          k4a_depth_mode_str = "PASSIVE_IR";
+        } break;
+      default:
+      {
+        std::cerr << "error: unrecognized depth_mode in recording" << std::endl;
+      }
+    };
+
+    k4a_frames_per_second = record_config.camera_fps;
+    std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
+
+    //device_config.camera_fps = record_config.camera_fps;
+    //device_config.color_format = record_config.color_format;
+    //device_config.color_resolution = record_config.color_resolution;
+    //device_config.depth_delay_off_color_usec = record_config.depth_delay_off_color_usec;
+    //device_config.depth_mode = record_config.depth_mode;
+    //device_config.subordinate_delay_off_master_usec = record_config.subordinate_delay_off_master_usec;
+    //device_config.wired_sync_mode = record_config.wired_sync_mode;
+
+  }else{
+
+    VERIFY(k4a_device_open(0, &device), "Open K4A Device failed!");
+    // Start camera. Make sure depth camera is enabled.
+    device_config.depth_mode       = k4a_depth_mode_t(k4a_depth_mode);
+
+    switch (k4a_frames_per_second){
+      case 5:{
+        device_config.camera_fps   = K4A_FRAMES_PER_SECOND_5;
+      } break;
+      case 15:{
+        device_config.camera_fps   = K4A_FRAMES_PER_SECOND_15;
+      } break;
+      case 30:{
+        device_config.camera_fps   = K4A_FRAMES_PER_SECOND_30;
+      } break;
+      default:{
+        std::cerr << "error: fps must be 5, 15, or 30"
+                  << std::endl;
+        exit(1);
+      }
+    };
+
+    device_config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
+    VERIFY(k4a_device_start_cameras(device, &device_config),
+         "Start K4A cameras failed!");
+
+    //Get the sensor calibration information
+    VERIFY(k4a_device_get_calibration(device, device_config.depth_mode,
+                      device_config.color_resolution,
+                      &sensor_calibration),
+          "Get depth camera calibration failed!");
+  }
+
   int depthWidth
       = sensor_calibration.depth_camera_calibration.resolution_width;
   int depthHeight
       = sensor_calibration.depth_camera_calibration.resolution_height;
 
+  //
+  // Echo the configuration to the command terminal
+  //
+  std::cout << "depth_mode         :" << k4a_depth_mode_str << std::endl;
+  std::cout << "frames_per_second  :" << k4a_frames_per_second << std::endl;
+  std::cout << "temporal smoothing :" << temporal_smoothing << std::endl;
+  std::cout << "output file name   :" << output_file_name << ".json"
+                                      << std::endl;
+  if(record_sensor_data){
+    std::cout << "video file name    :"  << output_file_name << ".mkv"
+                                        << std::endl;
+  }
+
+  //
   //Initialize and start the body tracker
+  //
   k4abt_tracker_t tracker = NULL;
   k4abt_tracker_configuration_t tracker_config = K4ABT_TRACKER_CONFIG_DEFAULT;
   VERIFY(k4abt_tracker_create(&sensor_calibration, tracker_config, &tracker),
@@ -474,8 +586,9 @@ int main(int argc, char**argv)
   k4abt_tracker_set_temporal_smoothing(tracker,temporal_smoothing);
 
   //Start the IMU
-  VERIFY(k4a_device_start_imu(device),"Start K4A imu failed!");
-
+  if(!process_sensor_file){
+    VERIFY(k4a_device_start_imu(device),"Start K4A imu failed!");
+  }
   //
   // JSON pre-amble
   //
@@ -530,7 +643,7 @@ int main(int argc, char**argv)
 
   if(record_sensor_data){
     if (K4A_FAILED(k4a_record_create(output_sensor_file.c_str(), device,
-                                    deviceConfig, &recording)))
+                                    device_config, &recording)))
     {
       std::cerr << "error: k4a_record_create() failed, unable to create "
                 << output_sensor_file << std::endl;
@@ -557,12 +670,53 @@ int main(int argc, char**argv)
   {
     k4a_capture_t sensor_capture = nullptr;
 
-    k4a_wait_result_t get_capture_result
-        = k4a_device_get_capture(device, &sensor_capture, K4A_WAIT_INFINITE);
+    bool capture_ready = false;
+    if(process_sensor_file){
+      k4a_stream_result_t stream_result =
+          k4a_playback_get_next_capture(playback_handle, &sensor_capture);
+      if (stream_result == K4A_STREAM_RESULT_EOF)
+      {
+          break;
+      }
+      else if( stream_result == K4A_STREAM_RESULT_SUCCEEDED)
+      {
+        capture_ready=true;
+      }
+      else
+      {
+        std::cerr << "error: k4a_playback_get_next_capture() failed at "
+                  << frame_count << std::endl;
+        exit(1);
+      }
 
-    if (get_capture_result == K4A_WAIT_RESULT_SUCCEEDED)
+      if(check_depth_image_exists(sensor_capture)==false)
+      {
+        std::cerr << "error: stream contains no depth image at " << frame_count
+                  << std::endl;
+        capture_ready=false;
+      }
+
+    }else{
+      k4a_wait_result_t get_capture_result
+          = k4a_device_get_capture(device, &sensor_capture, K4A_WAIT_INFINITE);
+
+      if(get_capture_result == K4A_WAIT_RESULT_SUCCEEDED){
+          capture_ready=true;
+      }else if (get_capture_result == K4A_WAIT_RESULT_TIMEOUT)
+      {
+          printf("error: k4a_device_get_capture() timed out \n");
+          //break;
+      }
+      else
+      {
+        printf("error: k4a_device_get_capture(): %d\n", get_capture_result);
+        //break;
+      }
+    }
+
+    //Process the data
+    if (capture_ready)
     {
-
 
       k4a_wait_result_t queue_capture_result =
           k4abt_tracker_enqueue_capture(tracker, sensor_capture,
@@ -632,9 +786,32 @@ int main(int argc, char**argv)
         //Fetch and save the imu data to a json object
         nlohmann::json imu_result_json;
         k4a_imu_sample_t imu_sample;
-        VERIFY_WAIT( k4a_device_get_imu_sample(device,&imu_sample,
-                                               K4A_WAIT_INFINITE),
-                       "Timed out waiting for IMU data");
+        bool imu_data_ready = false;
+        if(process_sensor_file)
+        {
+          k4a_stream_result_t imu_result =
+            k4a_playback_get_next_imu_sample(playback_handle,&imu_sample);
+          if(imu_result == K4A_STREAM_RESULT_SUCCEEDED)
+          {
+            imu_data_ready = true;
+          }
+          else if(imu_result == K4A_STREAM_RESULT_EOF)
+          {
+            imu_data_ready = false;
+          }
+          else
+          {
+            std::cerr << "error: k4a_playback_get_next_imu_sample() failed at "
+                      << frame_count << std::endl;
+            exit(1);
+          }
+
+        }else{
+          VERIFY_WAIT( k4a_device_get_imu_sample(device,&imu_sample,
+                                                 K4A_WAIT_INFINITE),
+                         "Timed out waiting for IMU data");
+          imu_data_ready=true;
+        }
         if(record_sensor_data)
         {
           k4a_result_t write_imu_sample
@@ -647,59 +824,62 @@ int main(int argc, char**argv)
           }
         }
 
-        push_imu_data_to_json(imu_result_json, imu_sample);
-        frame_result_json["imu"].push_back(imu_result_json);
 
+        if(imu_data_ready){
+          push_imu_data_to_json(imu_result_json, imu_sample);
+          frame_result_json["imu"].push_back(imu_result_json);
+        }
         //Fit a plane to the depth points that are furthest away from
         //the camera in the direction of gravity (this will fail when the
         //camera accelerates by 0.2 m/s2 in any direction)
         //This uses code from teh floor_detector example code
         
 
-
-        // Update point cloud.
-        pointCloudGenerator.Update(depth_image);
-
-        // Get down-sampled cloud points.
-        const int downsampleStep = 2;
-        const auto& cloudPoints = pointCloudGenerator.GetCloudPoints(downsampleStep);
-
-        // Detect floor plane based on latest visual and inertial observations.
-        const size_t minimumFloorPointCount = 1024 / (downsampleStep * downsampleStep);
-        const auto& maybeFloorPlane = 
-                floorDetector.TryDetectFloorPlane(cloudPoints, imu_sample, 
-                              sensor_calibration, minimumFloorPointCount);
-
-        // Visualize point cloud.
-        window3d.UpdatePointClouds(depth_image);
-
-        // Visualize the floor plane.
-        nlohmann::json floor_result_json;
-        if (maybeFloorPlane.has_value())
+        if(imu_data_ready)
         {
-            // For visualization purposes, make floor origin the projection of a point 1.5m in front of the camera.
-            Samples::Vector cameraOrigin = { 0, 0, 0 };
-            Samples::Vector cameraForward = { 0, 0, 1 };
+          // Update point cloud.
+          pointCloudGenerator.Update(depth_image);
 
-            auto p = maybeFloorPlane->ProjectPoint(cameraOrigin) 
-                   + maybeFloorPlane->ProjectVector(cameraForward) * 1.5f;
+          // Get down-sampled cloud points.
+          const int downsampleStep = 2;
+          const auto& cloudPoints = pointCloudGenerator.GetCloudPoints(downsampleStep);
 
-            auto n = maybeFloorPlane->Normal;
+          // Detect floor plane based on latest visual and inertial observations.
+          const size_t minimumFloorPointCount = 1024 / (downsampleStep * downsampleStep);
+          const auto& maybeFloorPlane =
+                  floorDetector.TryDetectFloorPlane(cloudPoints, imu_sample,
+                                sensor_calibration, minimumFloorPointCount);
 
-            window3d.SetFloorRendering(true, p.X, p.Y, p.Z, n.X, n.Y, n.Z);
-            floor_result_json["point"].push_back({p.X, p.Y, p.Z});
-            floor_result_json["normal"].push_back({n.X, n.Y, n.Z});
-            floor_result_json["valid"]=true;
+          // Visualize point cloud.
+          window3d.UpdatePointClouds(depth_image);
+
+          // Visualize the floor plane.
+          nlohmann::json floor_result_json;
+          if (maybeFloorPlane.has_value())
+          {
+              // For visualization purposes, make floor origin the projection of a point 1.5m in front of the camera.
+              Samples::Vector cameraOrigin = { 0, 0, 0 };
+              Samples::Vector cameraForward = { 0, 0, 1 };
+
+              auto p = maybeFloorPlane->ProjectPoint(cameraOrigin)
+                     + maybeFloorPlane->ProjectVector(cameraForward) * 1.5f;
+
+              auto n = maybeFloorPlane->Normal;
+
+              window3d.SetFloorRendering(true, p.X, p.Y, p.Z, n.X, n.Y, n.Z);
+              floor_result_json["point"].push_back({p.X, p.Y, p.Z});
+              floor_result_json["normal"].push_back({n.X, n.Y, n.Z});
+              floor_result_json["valid"]=true;
+          }
+          else
+          {
+              window3d.SetFloorRendering(false, 0, 0, 0);
+              floor_result_json["point"].push_back({0.,0.,0.});
+              floor_result_json["normal"].push_back({0.,0.,0.});
+              floor_result_json["valid"]=false;
+          }
+          frame_result_json["floor"].push_back(floor_result_json);
         }
-        else
-        {
-            window3d.SetFloorRendering(false, 0, 0, 0);
-            floor_result_json["point"].push_back({0.,0.,0.});
-            floor_result_json["normal"].push_back({0.,0.,0.});
-            floor_result_json["valid"]=false;
-        }
-        frame_result_json["floor"].push_back(floor_result_json);
-
         //Vizualize the tracked result
         VisualizeResult(body_frame, window3d, depthWidth, depthHeight);
         window3d.SetLayout3d(s_layoutMode);
@@ -727,17 +907,7 @@ int main(int argc, char**argv)
         //break;
       }
     }
-    else if (get_capture_result == K4A_WAIT_RESULT_TIMEOUT)
-    {
-      // It should never hit time out when K4A_WAIT_INFINITE is set.
-      printf("Error! Get depth frame time out!\n");
-      //break;
-    }
-    else
-    {
-      printf("Get depth capture returned error: %d\n", get_capture_result);
-      //break;
-    }
+
 
   } while (s_isRunning);
 
@@ -763,9 +933,18 @@ int main(int argc, char**argv)
   k4abt_tracker_shutdown(tracker);
   k4abt_tracker_destroy(tracker);
 
-  k4a_device_stop_cameras(device);
-  k4a_device_stop_imu(device);
-  k4a_device_close(device);
+  if(process_sensor_file)
+  {
+    k4a_playback_close(playback_handle);
+  }
+  else
+  {
+    k4a_device_stop_cameras(device);
+    k4a_device_stop_imu(device);
+    k4a_device_close(device);
+  }
+
+
 
   return 0;
 }
