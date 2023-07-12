@@ -241,3 +241,4 @@ target_link_libraries(simple_3d_viewer PRIVATE
 To learn more, I recommend carefully going through the kinect_mocap_studio.cc code. This code was created using the examples that appear in the Azure-Kinect-Sensor-SDK and the Azure-Kinect-Samples. Note that not all of these samples are configured to be built in the original download. However, with a little bit of CMake work most of the samples can be built and run. There is a lot of additional functionality that appears in these examples that you can take advantage of in your own programs.
 
 
+Changed something
